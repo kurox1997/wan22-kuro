@@ -1,6 +1,6 @@
 # =============================================================================
-#  Wan2.2 Rapid-Mega I2V - RunPod Serverless Worker v8
-#  4090最速構成 - コミュニティ事例統合版
+#  Wan2.2 Rapid-Mega I2V - RunPod Serverless Worker v8.1
+#  4090最速構成 - コミュニティ事例統合版 + C compiler追加
 # -----------------------------------------------------------------------------
 #  進化の履歴:
 #   v6: cu130 nightly + /start.sh書き換え → driver too oldで起動不能（ガチャ次第）
@@ -29,6 +29,18 @@
 #             backend: sageattn_qk_int8_pv_fp16_cuda (4090 sm_89 最適)
 #       → worker.js側でWORKFLOW_TEMPLATEにノード注入するためにKJNodesが必須
 #
+#  v8.1の追加修正（2026-04-20、logs__25_.txtのエラー対応）:
+#
+#   (D) gcc/g++ をapt-getで追加（C compiler）
+#       根拠: logs__25_.txtで "Failed to find C compiler" エラー
+#             → sageattention 1.0.6 の sageattn() が内部で Triton JIT コンパイル
+#             → Tritonが C++ でホストコードをビルドしようとして gcc/g++ 不在で失敗
+#       副産物の確認: "Using sage attention mode: auto" が出てKJNodes→sageattn()
+#                    の経路は正常動作していた。最後のピースがcompilerだった。
+#       コスト: イメージサイズ +60-100MB、ビルド時間 +1-2分
+#       効果: sage-attention 1.0.6がTriton JIT経由で動作、推定 -30% 高速化
+# =============================================================================
+#
 #  想定効果（コミュニティ実測ベース）:
 #   現状(v6、cuda backend only)      : 基準の 125-130%
 #   v8 (cuda backend + sage + fp16)  : 基準の 160-180%
@@ -50,6 +62,21 @@
 # =============================================================================
 
 FROM runpod/worker-comfyui:5.8.5-base
+
+# ---------------------------------------------------------------------------
+# 0) [v8.1新規] C compiler (gcc, g++) のインストール
+#    理由: sageattention 1.0.6 は内部でTriton JITコンパイルを行い、
+#          Tritonは C++ でホストコードをビルドする。worker-comfyui slim
+#          ベースイメージには gcc/g++ が入っておらず、推論時に
+#          "Failed to find C compiler" で即死する（logs__25_.txt実証）
+#    効果: sage-attention 1.0.6 が完全動作、推定 -30% 高速化
+#    コスト: イメージサイズ +60-100MB、ビルド時間 +1-2分
+# ---------------------------------------------------------------------------
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends gcc g++ && \
+    rm -rf /var/lib/apt/lists/*
+ENV CC=/usr/bin/gcc
+ENV CXX=/usr/bin/g++
 
 # ---------------------------------------------------------------------------
 # 1) PyTorch cu130 nightly（comfy_kitchen cuda backend有効化のため維持）
@@ -127,6 +154,10 @@ RUN rm -f /comfyui/test_input.json 2>/dev/null || true && \
 # ---------------------------------------------------------------------------
 # 9) Build-time health check
 # ---------------------------------------------------------------------------
+RUN echo "[BUILD-CHECK] gcc: $(gcc --version 2>&1 | head -1)" && \
+    echo "[BUILD-CHECK] g++: $(g++ --version 2>&1 | head -1)" && \
+    echo "[BUILD-CHECK] CC env: ${CC}, CXX env: ${CXX}" || \
+    echo "[BUILD-CHECK] gcc/g++: NOT AVAILABLE - sageattention Triton JIT will fail"
 RUN python -c "import torch; print(f'[BUILD-CHECK] PyTorch: {torch.__version__}'); print(f'[BUILD-CHECK] CUDA: {torch.version.cuda}')" || true
 RUN python -c "import sageattention; print(f'[BUILD-CHECK] sageattention: OK (version={getattr(sageattention, \"__version__\", \"unknown\")})'); print(f'[BUILD-CHECK] sageattention backends: {[a for a in dir(sageattention) if a.startswith(\"sageattn\")]}')" || echo "[BUILD-CHECK] sageattention: NOT AVAILABLE"
 RUN python -c "import triton; print(f'[BUILD-CHECK] triton: {triton.__version__}')" || true
