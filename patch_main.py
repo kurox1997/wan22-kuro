@@ -1,9 +1,19 @@
 """
-[v9.2] main.py に fast args を強制注入するパッチ
-v9.1からの変更: --highvram を削除 (24GB 4090でOOM回避)
-ComfyUI 自動メモリ管理に任せる方針
+[v9.4] main.py パッチ
+v9.3からの変更: --highvram削除、--lowvram追加（最終版）
+
+経緯:
+  v9.1 (--highvram): UNET fp16 で OOM (19.85GB)
+  v9.2 ((highvram削除)): 速度低下するも OOM 残存
+  v9.3 (--lowvram): 提案するも反映確認できず
+  v9.4: fp8がワークフローで効いている状態 + --lowvram の組合せ
+
+戦略:
+- ワークフロー側でUNETLoaderにfp8_e4m3fn指定 (Cloudflare Workerで設定済)
+- main.py に --lowvram を強制注入し、UNET の CPU/GPU 自動転送を有効化
+- fp8 + lowvram で VRAM 12-14GB予想、絶対OOMしない
 """
-import os, sys
+import os, sys, re
 
 MAIN_PY = '/comfyui/main.py'
 
@@ -14,25 +24,29 @@ if not os.path.exists(MAIN_PY):
 with open(MAIN_PY, 'r') as f:
     content = f.read()
 
-# v9.2: --highvram を削除 (OOM対策)
-PATCH_HEADER = """# === [v9.2 PATCH] fast args auto-inject (no --highvram) ===
-import sys as _sys_v92
-_args_v92 = ['--fast', 'fp16_accumulation']
-for _arg in reversed(_args_v92):
-    if _arg not in _sys_v92.argv:
-        _sys_v92.argv.insert(1, _arg)
-print(f'[v9.2 PATCH] argv = {_sys_v92.argv}')
-# === [v9.2 PATCH] end ===
+PATCH_HEADER = """# === [v9.4 PATCH] fast args + lowvram auto-inject ===
+import sys as _sys_v94
+_args_v94 = ['--fast', 'fp16_accumulation', '--lowvram']
+# --highvram があれば除去 (v9.1の名残対策)
+if '--highvram' in _sys_v94.argv:
+    _sys_v94.argv.remove('--highvram')
+for _arg in reversed(_args_v94):
+    if _arg not in _sys_v94.argv:
+        _sys_v94.argv.insert(1, _arg)
+print(f'[v9.4 PATCH] argv = {_sys_v94.argv}')
+# === [v9.4 PATCH] end ===
 
 """
 
-# 旧バージョンのパッチが入っていたら除去 (再ビルド時の重複防止)
-import re
-content = re.sub(r'# === \[v9\.\d PATCH\][^\n]*\n.*?# === \[v9\.\d PATCH\] end ===\n+', '', content, flags=re.DOTALL)
+# 旧パッチがあれば除去
+content = re.sub(
+    r'# === \[v9\.\d PATCH\][^\n]*\n.*?# === \[v9\.\d PATCH\] end ===\n+',
+    '', content, flags=re.DOTALL
+)
 
-if 'v9.2 PATCH' in content:
+if 'v9.4 PATCH' in content:
     print('[PATCH] main.py already patched, skip')
 else:
     with open(MAIN_PY, 'w') as f:
         f.write(PATCH_HEADER + content)
-    print('[PATCH] main.py PATCHED with v9.2 (no --highvram, no --use-sage-attention)')
+    print('[PATCH] main.py PATCHED with v9.4 (--fast fp16_accumulation --lowvram)')

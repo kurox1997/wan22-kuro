@@ -1,26 +1,26 @@
 # syntax=docker/dockerfile:1.4
 # =============================================================================
-#  DaSiWa WAN2.2 I2V Lightspeed v10 - RunPod Serverless Worker v9.2
-#  v9.1 の OOM エラー修正版
+#  DaSiWa WAN2.2 I2V Lightspeed v10 - RunPod Serverless Worker v9.4
+#  fp8 + --lowvram で OOM 完全回避版
 # -----------------------------------------------------------------------------
-#  v9.2 修正点 (2026-04-29):
-#   - v9.1で sage attention は完全動作したが (Using sage attention mode: auto x2)
-#     KSamplerAdvanced で OOM (19.85GB allocated / 23.52GB limit / 31MB不足)
-#   - 原因: --highvram で全モデルをVRAM常駐 → 4090 24GBの限界に達した
-#   - 解決: --highvram を削除、ComfyUI の自動メモリ管理に任せる
-#     (LoRAやUNETの一部をオフロードしてOOM回避、速度低下は5-10%程度)
+#  v9.4 修正点 (2026-04-29):
+#   - logs__38で fp8 ロード成功確認 (model weight dtype torch.float8_e4m3fn)
+#     しかし VRAM 22.61GB で OOM (LoRA fp8 stochastic round で追加バッファ要求)
+#   - 解決: --highvram削除 → --lowvram追加
+#     ComfyUI が UNET を CPU/GPU 間で自動転送するため
+#     fp8 + lowvram のハイブリッドで 12-14GB に収まる
 #
-#  既存方針継承:
-#   - cu130 nightly (cu128 fallback)
-#   - KJNodes + PathchSageAttentionKJ (sage_attention: "auto")
-#   - heredoc 不使用 (patch_main.py 別ファイル化)
-#   - Triton JIT 依存パッケージ完備
+#  確認済み (logs__38):
+#   ✅ comfy_kitchen cuda backend 有効 (Backend cuda selected for ...)
+#   ✅ Enabled fp16 accumulation
+#   ✅ model weight dtype torch.float8_e4m3fn
+#   ✅ Using sage attention mode: auto (KJNodes)
 # =============================================================================
 
 FROM runpod/worker-comfyui:5.8.5-base
 
 # ---------------------------------------------------------------------------
-# 1) ビルド依存
+# 1) ビルド依存 (Triton JIT)
 # ---------------------------------------------------------------------------
 RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential cmake git wget ffmpeg python3-dev libc6-dev \
@@ -56,7 +56,7 @@ RUN pip install --no-cache-dir -U sageattention || \
     pip install --no-cache-dir sageattention==1.0.6
 
 # ---------------------------------------------------------------------------
-# 6) KJNodes (PathchSageAttentionKJ)
+# 6) KJNodes
 # ---------------------------------------------------------------------------
 RUN (comfy-node-install comfyui-kjnodes) || \
     (cd /comfyui/custom_nodes && \
@@ -76,16 +76,16 @@ RUN cd /comfyui/custom_nodes && \
 COPY extra_model_paths.yaml /comfyui/extra_model_paths.yaml
 
 # ---------------------------------------------------------------------------
-# 9) main.py パッチ (v9.2: --highvram 削除)
+# 9) main.py パッチ (v9.4: --fast fp16_accumulation --lowvram)
 # ---------------------------------------------------------------------------
 COPY patch_main.py /tmp/patch_main.py
 RUN python3 /tmp/patch_main.py && rm -f /tmp/patch_main.py
 
 # ---------------------------------------------------------------------------
-# 10) /start.sh sed (v9.2: --highvram 削除)
+# 10) /start.sh sed (v9.4: --lowvram)
 # ---------------------------------------------------------------------------
 RUN if [ -f /start.sh ]; then \
-      sed -i 's|main\.py --listen|main.py --fast fp16_accumulation --listen|g' /start.sh ; \
+      sed -i 's|main\.py --listen|main.py --fast fp16_accumulation --lowvram --listen|g' /start.sh ; \
     fi
 
 # ---------------------------------------------------------------------------
