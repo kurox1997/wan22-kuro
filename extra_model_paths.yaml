@@ -1,20 +1,25 @@
 # ============================================================================
 # Network Volume上のモデルパス定義
-# ----------------------------------------------------------------------------
 # Pod時:        /workspace/runpod-slim/ComfyUI/models/
 # Serverless時: /runpod-volume/runpod-slim/ComfyUI/models/
+#
+# DaSiWa WAN2.2 I2V Lightspeed v10 用フォルダ:
+#   diffusion_models/  ← UNET High/Low (約14GB×2)
+#   vae/               ← wan_2.1_vae.safetensors
+#   text_encoders/     ← umt5_xxl_fp8_e4m3fn_scaled.safetensors
+#   loras/             ← DR34ML4Y_HIGH/LOW.safetensors 等
 # ============================================================================
 
 runpod_network_volume:
     base_path: /runpod-volume/runpod-slim/ComfyUI/
     checkpoints: models/checkpoints/
+    diffusion_models: models/diffusion_models/
+    unet: models/diffusion_models/
     vae: models/vae/
     loras: models/loras/
-    clip: models/clip/
+    clip: models/text_encoders/
+    text_encoders: models/text_encoders/
     clip_vision: models/clip_vision/
     controlnet: models/controlnet/
     upscale_models: models/upscale_models/
     embeddings: models/embeddings/
-    diffusion_models: models/diffusion_models/
-    text_encoders: models/text_encoders/
-    unet: models/unet/

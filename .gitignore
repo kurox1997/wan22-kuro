@@ -1,4 +1,9 @@
-﻿*.bak_*
-*.old_*
 .DS_Store
-Thumbs.db
+*.swp
+*.tmp
+__pycache__/
+*.pyc
+.venv/
+.env
+node_modules/
+*.log
