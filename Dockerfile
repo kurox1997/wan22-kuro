@@ -1,13 +1,19 @@
+# syntax=docker/dockerfile:1.4
 # =============================================================================
-#  DaSiWa WAN2.2 I2V Lightspeed v10 - RunPod Serverless Worker v9.0
-#  過去v8.3で実証済の構成を踏襲: cu130 nightly + KJNodes + PathchSageAttentionKJ
+#  DaSiWa WAN2.2 I2V Lightspeed v10 - RunPod Serverless Worker v9.1
+#  v9.0 のheredoc構文が RunPod BuildKit でエラーになった問題を修正
 # -----------------------------------------------------------------------------
-#  核心:
-#   - --use-sage-attention 起動フラグは削除 (Wan/Qwenで黒画面になる公式罠)
-#   - 代わりに ComfyUI-KJNodes の PathchSageAttentionKJ ノードを workflow に注入
-#     (backend: "auto" で sageattention 1.0.6 / 2.x 両対応)
-#   - cu130 nightly で comfy_kitchen cuda backend 有効化 (Backend cuda selected)
-#   - Triton JIT のための gcc/g++/python3-dev 等を完備 (過去のv8.0/v8.1/v8.2 失敗を全て回避)
+#  v9.1 修正点 (2026-04-29):
+#   - v9.0で main.py パッチに使用した heredoc (RUN python3 << 'PYEOF') が
+#     BuildKit デフォルト frontend で解釈されず "unknown instruction: content" エラー
+#   - 解決: パッチ内容を別ファイル patch_main.py に分離、COPY + python3 実行
+#     → Dockerfile から heredoc を完全削除 → どの BuildKit でも動く
+#
+#  既存方針継承:
+#   - cu130 nightly (cu128 fallback)
+#   - KJNodes + PathchSageAttentionKJ ノード方式 (--use-sage-attention は使わない)
+#   - build-essential / cmake / python3-dev 等の Triton JIT 依存
+#   - TRITON_CACHE_DIR=/tmp/triton_cache
 # =============================================================================
 
 FROM runpod/worker-comfyui:5.8.5-base
@@ -57,7 +63,7 @@ RUN (comfy-node-install comfyui-kjnodes) || \
      pip install --no-cache-dir -r ComfyUI-KJNodes/requirements.txt 2>/dev/null || true)
 
 # ---------------------------------------------------------------------------
-# 7) ComfyUI-VideoHelperSuite (VHS_VideoCombine)
+# 7) ComfyUI-VideoHelperSuite
 # ---------------------------------------------------------------------------
 RUN cd /comfyui/custom_nodes && \
     git clone --depth 1 https://github.com/Kosinkadink/ComfyUI-VideoHelperSuite && \
@@ -69,32 +75,15 @@ RUN cd /comfyui/custom_nodes && \
 COPY extra_model_paths.yaml /comfyui/extra_model_paths.yaml
 
 # ---------------------------------------------------------------------------
-# 9) main.py パッチ
+# 9) main.py パッチ (heredoc 回避: 別ファイルから実行)
 #     --use-sage-attention は注入しない (Wan黒画面の罠回避)
 #     --fast fp16_accumulation --highvram のみ
-#     sage本体は workflow の PathchSageAttentionKJ ノード経由で適用
 # ---------------------------------------------------------------------------
-RUN python3 << 'PYEOF'
-content = open('/comfyui/main.py').read()
-patch = """# === [v9.0 PATCH] fast args auto-inject ===
-import sys as _sys_v90
-_args_v90 = ['--fast', 'fp16_accumulation', '--highvram']
-for _arg in reversed(_args_v90):
-    if _arg not in _sys_v90.argv:
-        _sys_v90.argv.insert(1, _arg)
-print(f'[v9.0 PATCH] argv = {_sys_v90.argv}')
-# === [v9.0 PATCH] end ===
-
-"""
-if 'v9.0 PATCH' not in content:
-    open('/comfyui/main.py', 'w').write(patch + content)
-    print('[BUILD] main.py PATCHED (no --use-sage-attention)')
-else:
-    print('[BUILD] main.py already patched')
-PYEOF
+COPY patch_main.py /tmp/patch_main.py
+RUN python3 /tmp/patch_main.py && rm -f /tmp/patch_main.py
 
 # ---------------------------------------------------------------------------
-# 10) /start.sh sed (保険)
+# 10) /start.sh sed (保険、--use-sage-attention は含めない)
 # ---------------------------------------------------------------------------
 RUN if [ -f /start.sh ]; then \
       sed -i 's|main\.py --listen|main.py --fast fp16_accumulation --highvram --listen|g' /start.sh ; \
